@@ -21,3 +21,4 @@ logs/
 *.csv
 *.xlsx
 *.docx
+*.utf8_clean.csv

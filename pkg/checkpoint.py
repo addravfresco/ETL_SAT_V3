@@ -1,7 +1,7 @@
 """
 Módulo de persistencia de estado transaccional (Bookmarking).
 
-Gestiona la lectura y escritura de punteros de ejecución en formato JSON 
+Gestiona la lectura, escritura y depuración de punteros de ejecución en formato JSON 
 para permitir la reanudación segura (Cold Resume) en arquitecturas de 
 procesamiento por lotes, mitigando la pérdida de avance ante interrupciones.
 """
@@ -16,16 +16,6 @@ STATE_FILE = "estado_etl.json"
 def leer_estado(anexo_id: str) -> int:
     """
     Recupera el índice de la última fila procesada para un anexo específico.
-    
-    Implementa tolerancia a fallos ante corrupciones del archivo de estado 
-    (e.g., interrupción de I/O durante la escritura) retornando al inicio del archivo.
-
-    Args:
-        anexo_id (str): Identificador único del flujo de datos (e.g., '1A', '2B').
-
-    Returns:
-        int: Coordenada de la fila donde debe reanudarse la lectura. Retorna 0 
-            si el estado no existe o el archivo presenta corrupción estructural.
     """
     ruta_archivo = Path(STATE_FILE)
     
@@ -43,13 +33,6 @@ def leer_estado(anexo_id: str) -> int:
 def guardar_estado(anexo_id: str, filas_procesadas: int) -> None:
     """
     Actualiza el puntero de ejecución del anexo en el archivo de estado global.
-    
-    Utiliza un patrón de lectura-modificación-escritura para preservar el estado
-    de otros anexos concurrentes o previos almacenados en el mismo artefacto.
-
-    Args:
-        anexo_id (str): Identificador único del flujo de datos.
-        filas_procesadas (int): Sumatoria histórica de filas ingestas exitosamente.
     """
     ruta_archivo = Path(STATE_FILE)
     datos: Dict[str, int] = {}
@@ -65,3 +48,27 @@ def guardar_estado(anexo_id: str, filas_procesadas: int) -> None:
     
     with open(ruta_archivo, "w", encoding="utf-8") as file:
         json.dump(datos, file, indent=4)
+
+
+def eliminar_estado(anexo_id: str) -> None:
+    """
+    Purga el estado transaccional de un anexo tras su consolidación exitosa.
+    Garantiza que la siguiente ejecución del mismo anexo sea un Cold Start limpio.
+    """
+    ruta_archivo = Path(STATE_FILE)
+    
+    if not ruta_archivo.exists():
+        return
+        
+    try:
+        with open(ruta_archivo, "r", encoding="utf-8") as file:
+            datos: Dict[str, Any] = json.load(file)
+            
+        if anexo_id in datos:
+            del datos[anexo_id]
+            
+            with open(ruta_archivo, "w", encoding="utf-8") as file:
+                json.dump(datos, file, indent=4)
+                
+    except json.JSONDecodeError:
+        pass

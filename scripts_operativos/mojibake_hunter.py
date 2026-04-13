@@ -54,7 +54,7 @@ def cazar_mojibake(nombre_archivo: str) -> None:
     print(f"[INFO] Se excluirán {len(palabras_conocidas):,} patrones preexistentes en cleaning_rules.py")
 
     # Expresión regular vectorizada para captura de caracteres anómalos
-    regex_corrupcion = r"(?i)\b\w*[\ufffdÃÐðƑâÂ˜¨´™&¿½¡]+\w*\b"
+    regex_corrupcion = r"(?i)\b\w*[\ufffdÃÐðƑâÂ˜¨´™&¿½¡\?#]+\w*\b"
 
     # 3. Inicialización del lector en lotes para procesamiento Out-of-Core
     try:

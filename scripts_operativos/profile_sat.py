@@ -114,6 +114,17 @@ def profile_sat_table(nombre_archivo: str) -> None:
 
             print(f"{(i + 1):<4} | {col:<35} | {pct_nulos:>8.2f}% | {ejemplo_final}")
 
+        # =====================================================================
+        # [NUEVA SECCIÓN]: Exportación rápida para cacería de Schema Drift
+        # =====================================================================
+        print("\n" + "-" * 135)
+        print("[INFO] LISTA PLANA DE COLUMNAS (Ideal para copiar y comparar contra SQL/globals.py):")
+        
+        # Formatea las columnas como una lista de Python para fácil copiado
+        lista_formateada = ",\n    ".join([f'"{c}"' for c in columnas])
+        print(f"[\n    {lista_formateada}\n]")
+        print("-" * 135)    
+
     except Exception as e:
         print(f"[CRITICAL ERROR] Fallo irrecuperable al procesar {nombre_archivo}: {e}")
 
