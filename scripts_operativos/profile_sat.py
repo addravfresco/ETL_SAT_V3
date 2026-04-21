@@ -1,5 +1,4 @@
-"""
-Módulo de perfilado estructural y volumétrico para esquemas de datos masivos.
+"""Módulo de perfilado estructural y volumétrico para esquemas de datos masivos.
 
 Provee herramientas analíticas para determinar la composición de columnas, 
 densidad de valores nulos y volumetría real de archivos que exceden la 
@@ -16,8 +15,7 @@ from pkg.globals import SAT_RAW_DIR
 
 
 def profile_sat_table(nombre_archivo: str) -> None:
-    """
-    Ejecuta el escaneo secuencial para determinar la topología del archivo crudo.
+    """Ejecuta el escaneo secuencial para determinar la topología del archivo crudo.
 
     Calcula métricas de calidad de datos (densidad de nulos) y extrae muestras 
     representativas por cada columna detectada, mitigando el impacto en la memoria RAM 
@@ -32,7 +30,7 @@ def profile_sat_table(nombre_archivo: str) -> None:
     print("[INFO] INICIANDO PERFILADO FORENSE ESTRUCTURAL (MODO LOTES)")
     print("=" * 135)
 
-    # Resolución de ruta y validación de existencia
+    # Resolución de la ruta de montaje y validación de disponibilidad
     ruta_completa = SAT_RAW_DIR / nombre_archivo
     
     if not ruta_completa.exists():
@@ -43,7 +41,7 @@ def profile_sat_table(nombre_archivo: str) -> None:
     print("[INFO] Aprovisionando lector por bloques para protección de memoria...")
 
     try:
-        # Inicialización del escáner en lotes configurado para tolerancia de formatos irregulares.
+        # Inicialización del escáner en lotes con tolerancia a formatos irregulares.
         # Se desactiva el encapsulamiento por comillas (quote_char=None) para evadir 
         # asimetrías de formato comunes en las extracciones del SAT.
         reader = pl.read_csv_batched(
@@ -64,7 +62,7 @@ def profile_sat_table(nombre_archivo: str) -> None:
         ejemplos: Dict[str, Any] = {}
         lotes_procesados = 0
 
-        # Iteración y consolidación de métricas estructurales
+        # Iteración transaccional y consolidación de métricas estructurales en memoria
         while True:
             batches = reader.next_batches(1)
             if not batches:
@@ -74,16 +72,16 @@ def profile_sat_table(nombre_archivo: str) -> None:
             total_filas_global += len(df_batch)
             lotes_procesados += 1
             
-            # Captura del esquema en la primera iteración
+            # Captura del esquema topológico durante la primera iteración
             if not columnas:
                 columnas = df_batch.columns
                 nulos_por_columna = {c: 0 for c in columnas}
 
-            # Normalización de representaciones vacías hacia nulos analíticos
+            # Transformación de representaciones vacías hacia nulos lógicos (Nulls)
             df_batch = df_batch.with_columns(pl.all().replace("", None))
 
             for col in columnas:
-                # Agregación incremental de conteo de nulos
+                # Agregación incremental del conteo de nulos
                 nulos_por_columna[col] += df_batch[col].null_count()
                 
                 # Extracción de muestra determinista (primer valor no nulo detectado)
@@ -100,27 +98,24 @@ def profile_sat_table(nombre_archivo: str) -> None:
         print(f"[RESULTADO] Volumetría consolidada: {total_filas_global:,} registros.")
         print(f"[RESULTADO] Total de columnas detectadas: {len(columnas)}")
         
-        # Renderizado del reporte tabular de topología
+        # Consolidación y renderizado del reporte tabular de topología
         print(f"\n{'No.':<4} | {'Nombre de Columna':<35} | {'% Nulos':<10} | {'Muestra de Dato'}")
         print("-" * 135)
 
         for i, col in enumerate(columnas):
-            # Cálculo de densidad poblacional de nulos
+            # Cálculo de la densidad poblacional de nulos
             pct_nulos = (nulos_por_columna[col] / total_filas_global * 100) if total_filas_global > 0 else 0
             
             ejemplo_str = ejemplos.get(col, "NULL")
-            # Truncamiento de muestra para mantener la integridad de la interfaz de consola
+            # Truncamiento defensivo para evitar la distorsión del renderizado en consola
             ejemplo_final = (ejemplo_str[:50] + '...') if len(ejemplo_str) > 50 else ejemplo_str
 
             print(f"{(i + 1):<4} | {col:<35} | {pct_nulos:>8.2f}% | {ejemplo_final}")
 
-        # =====================================================================
-        # [NUEVA SECCIÓN]: Exportación rápida para cacería de Schema Drift
-        # =====================================================================
+        # Síntesis del catálogo estático para la configuración del contrato de datos
         print("\n" + "-" * 135)
-        print("[INFO] LISTA PLANA DE COLUMNAS (Ideal para copiar y comparar contra SQL/globals.py):")
+        print("[INFO] CATÁLOGO ESTRUCTURAL PLANO (Compatible para auditoría de DDL/Diccionarios):")
         
-        # Formatea las columnas como una lista de Python para fácil copiado
         lista_formateada = ",\n    ".join([f'"{c}"' for c in columnas])
         print(f"[\n    {lista_formateada}\n]")
         print("-" * 135)    
@@ -132,7 +127,7 @@ def profile_sat_table(nombre_archivo: str) -> None:
 
 
 if __name__ == "__main__":
-    # Análisis de argumentos por interfaz de línea de comandos (CLI)
+    # Evaluación de la CLI para despliegue manual aislado
     if len(sys.argv) < 2:
         print("[WARN] Uso de CLI incorrecto.")
         print("[INFO] Sintaxis esperada: python profile_data.py <nombre_del_archivo.csv>")

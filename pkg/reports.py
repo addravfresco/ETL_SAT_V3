@@ -1,11 +1,16 @@
-"""
-Módulo de Telemetría, Auditoría y Control de Calidad Transaccional.
+"""Módulo de Telemetría y Auditoría Transaccional (UNIVERSAL).
 
-Implementa el motor de observación (Observability) del pipeline.
-Supervisa el rendimiento de ingesta en tiempo real, detecta degradación 
-en la calidad de los datos (Nulos, Mutilación, Mojibake) y administra
-la bandeja de cuarentena en modo Append Inteligente.
+Implementa el motor de observación pasiva (Observability) del pipeline.
+Supervisa el rendimiento de ingesta y genera un reporte forense en formato de texto
+plano con estadísticas sobre la degradación estructural de los datos fuente.
+
+Nota Arquitectónica: 
+    Este módulo no ejecuta cuarentenas ni bloquea el flujo de datos.
+    El aislamiento transaccional de anomalías (Audit Logging) está delegado 
+    al motor de Data Quality y a la base de datos relacional.
 """
+
+from __future__ import annotations
 
 import time
 from datetime import datetime
@@ -18,54 +23,66 @@ from pkg.globals import LOG_DIR
 
 
 class ETLReport:
-    """
-    Controlador de telemetría y auditoría dinámica para procesos ETL.
+    """Controlador de telemetría y auditoría dinámica para procesos ETL.
 
-    Mantiene el estado transaccional de las métricas de calidad y rendimiento
-    durante el ciclo de vida de la ejecución. Emplea un patrón de Bitácora
-    Estática para consolidar ejecuciones fragmentadas en archivos maestros únicos.
+    Recopila métricas de rendimiento en tiempo de ejecución y realiza un perfilado
+    pasivo de anomalías en cadenas de texto (Mojibake, Mutilación de Strings) para
+    generar bitácoras forenses consolidadas.
+
+    Attributes:
+        start_time (float): Marca de tiempo de inicialización de la instancia.
+        total_rows (int): Acumulador de filas lógicas procesadas en la sesión.
+        total_batches (int): Acumulador de particiones (chunks) procesadas.
+        alerts_mojibake (int): Conteo de registros con problemas de codificación.
+        alerts_length (int): Conteo de registros con textos anormalmente cortos.
+        alerts_nulls (int): Conteo de registros con valores vacíos en campos monitoreados.
+        samples_mojibake (Set[str]): Muestras únicas de cadenas con problemas de codificación.
+        samples_length (Set[str]): Muestras únicas de cadenas mutiladas.
+        archivo_auditoria (Path): Ruta física de destino para el archivo de reporte.
+        regex_mojibake (str): Patrón de expresión regular para detectar caracteres corruptos.
+        min_text_length (int): Umbral mínimo de longitud aceptable para textos descriptivos.
     """
 
     def __init__(self, id_anexo: str, is_recovery: bool = False):
-        """
-        Inicializa los contadores y gestiona la preservación de logs históricos.
-        
+        """Inicializa los contadores y gestiona la preservación de logs históricos.
+
         Args:
-            id_anexo (str): Identificador del anexo (ej. '1A_2023').
-            is_recovery (bool): Bandera que indica si el proceso se reanudó tras un fallo.
+            id_anexo (str): Identificador único del anexo en ejecución (ej. '4D_2024').
+            is_recovery (bool, optional): Bandera que indica si el proceso es un 
+                inicio en frío (False) o una reanudación desde un punto de control (True). 
+                Por defecto es False.
         """
         self.start_time = time.time()
         self.total_rows = 0
         self.total_batches = 0
+        
         self.alerts_mojibake = 0
         self.alerts_length = 0
         self.alerts_nulls = 0
         
-        # Desglose de Cuarentena
-        self.total_cuarentena = 0
-        self.hard_rejects = 0
-        self.soft_rejects = 0
-        
         self.samples_mojibake: Set[str] = set()
         self.samples_length: Set[str] = set()
 
-        # Nombres estáticos y limpios (sin marcas de tiempo que generen desorden)
-        self.archivo_cuarentena = LOG_DIR / f"CUARENTENA_ANEXO_{id_anexo}.csv"
         self.archivo_auditoria = LOG_DIR / f"AUDIT_ANEXO_{id_anexo}.txt"
 
-        # Si es un inicio en frío (desde cero), purgamos los archivos viejos
+        # Purga del archivo de auditoría histórico exclusivo para inicios en frío (Cold Starts)
         if not is_recovery:
-            if self.archivo_cuarentena.exists():
-                self.archivo_cuarentena.unlink()
             if self.archivo_auditoria.exists():
                 self.archivo_auditoria.unlink()
 
-        # Patrón heurístico para identificar fallos de codificación residuales
         self.regex_mojibake = r"[?ÃÂƒ†‡‰‹›ŒŽ‘’“”•–—˜™š›œžŸ¡¢£¤¥¦§¨©ª«¬®¯°±²³´µ¶·¸¹º»¼½¾¿Ðð]"
         self.min_text_length = 3
 
     def audit_batch(self, df: pl.DataFrame) -> None:
-        """Ejecuta una auditoría forense selectiva sobre las columnas de texto descriptivo."""
+        """Ejecuta un escaneo forense pasivo sobre atributos textuales críticos.
+
+        Analiza el lote actual mediante operaciones vectorizadas buscando valores nulos, 
+        caracteres corruptos o longitudes anómalas. Actualiza los contadores de telemetría 
+        y recolecta muestras únicas sin alterar el DataFrame original.
+
+        Args:
+            df (pl.DataFrame): Lote de datos en memoria para ser perfilado.
+        """
         keywords = ["NOMBRE", "CONCEPTO", "DESCRIPCION"]
 
         cols_audit = [
@@ -77,7 +94,6 @@ class ETLReport:
             return
 
         for col in cols_audit:
-            # 1. Monitoreo de Integridad Estructural (Nulos)
             n_nulls = df.filter(pl.col(col).is_null()).height
             if n_nulls > 0:
                 self.alerts_nulls += n_nulls
@@ -86,14 +102,12 @@ class ETLReport:
             if df_valid.height == 0:
                 continue
 
-            # 2. Análisis de Degradación de Codificación (Mojibake)
             suspect_mojibake = df_valid.filter(pl.col(col).str.contains(self.regex_mojibake))
             if suspect_mojibake.height > 0:
                 self.alerts_mojibake += suspect_mojibake.height
                 samples = suspect_mojibake.select(col).unique().head(5).to_series().to_list()
                 self.samples_mojibake.update([f"[{col}] {s}" for s in samples])
 
-            # 3. Análisis de Mutilación (Cadenas anómalamente cortas)
             suspect_len = df_valid.filter(pl.col(col).str.len_chars() < self.min_text_length)
             if suspect_len.height > 0:
                 self.alerts_length += suspect_len.height
@@ -101,34 +115,29 @@ class ETLReport:
                 self.samples_length.update([f"[{col}] {s}" for s in samples])
 
     def update_metrics(self, rows_count: int) -> None:
-        """Actualiza los contadores globales e imprime la telemetría en tiempo real."""
+        """Acumula contadores internos de velocidad y volumen para el reporte final.
+
+        Args:
+            rows_count (int): Número de filas contenidas en el lote procesado.
+        """
         self.total_rows += rows_count
         self.total_batches += 1
-        elapsed = time.time() - self.start_time
-        speed = self.total_rows / (elapsed + 1e-6)
-        print(f"[INFO] Lote {self.total_batches:04d} | Filas Totales: {self.total_rows:,.0f} | Vel: {speed:,.0f} regs/seg")
-
-    def log_quarantine(self, df_quarentena: pl.DataFrame, id_anexo: str) -> None:
-        """Aísla los registros anómalos persistiendo la información de forma acumulativa."""
-        if df_quarentena.is_empty():
-            return
-            
-        self.total_cuarentena += df_quarentena.height
-        
-        # Desglose estadístico por tipo de rechazo
-        if "Motivo_Rechazo" in df_quarentena.columns:
-            self.hard_rejects += df_quarentena.filter(pl.col("Motivo_Rechazo").str.contains(r"\[HARD\]")).height
-            self.soft_rejects += df_quarentena.filter(pl.col("Motivo_Rechazo").str.contains(r"\[SOFT\]")).height
-        
-        # Verifica si el archivo existe para decidir si inyecta o no las cabeceras
-        es_nuevo = not self.archivo_cuarentena.exists()
-        
-        # Modo 'a' (append) para inyectar filas sin sobrescribir
-        with open(self.archivo_cuarentena, "a", encoding="utf-8") as file:
-            df_quarentena.write_csv(file, include_header=es_nuevo)
 
     def generate_final_report(self, id_anexo: str, file_name: str, status: str = "SUCCESS", error_details: str = "") -> Path:
-        """Sintetiza las métricas y anexa el resultado al archivo de auditoría maestro."""
+        """Sintetiza las métricas y anexa el resultado al archivo de auditoría maestro (.txt).
+
+        Calcula la duración total de la sesión y estructura un reporte descriptivo 
+        con los hallazgos del perfilado pasivo, guardándolo en el directorio de logs.
+
+        Args:
+            id_anexo (str): Identificador del anexo auditado.
+            file_name (str): Nombre físico del archivo fuente.
+            status (str, optional): Código de estado final de la ejecución. Por defecto "SUCCESS".
+            error_details (str, optional): Traza de la excepción en caso de fallos. Por defecto "".
+
+        Returns:
+            Path: Ruta del archivo generado. Devuelve la ruta "ERROR" en caso de falla de I/O.
+        """
         total_duration = (time.time() - self.start_time) / 60
         timestamp_fin = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -142,14 +151,12 @@ class ETLReport:
             f"Total Duration (Session): {total_duration:.2f} minutes",
             f"Processed Rows (Session): {self.total_rows:,.0f}",
             "-" * 80,
-            "QUALITY SUMMARY (Session)",
+            "QUALITY SUMMARY (Passive Profiling)",
             "-" * 80,
             f"Encoding Alerts (Mojibake): {self.alerts_mojibake:,.0f}",
             f"Integrity Alerts (Nulls):    {self.alerts_nulls:,.0f}",
             f"Mutilation Alerts (Short):   {self.alerts_length:,.0f}",
-            f"Quarantined Rows (DLQ):      {self.total_cuarentena:,.0f}",
-            f"  ├─ [HARD] Rejects (Dropped): {self.hard_rejects:,.0f}",
-            f"  └─ [SOFT] Rejects (Flagged): {self.soft_rejects:,.0f}",
+            "Nota: Las reglas de negocio (Data Quality) se persistieron en SQL Server.",
             "=" * 80,
         ]
 
@@ -161,10 +168,12 @@ class ETLReport:
             lines.append(f"\n[CRITICAL ERROR DETAILS]\n{error_details}")
 
         try:
-            # Modo 'a' (append) en lugar de 'w' para conservar el historial de pausas/errores
             with open(self.archivo_auditoria, "a", encoding="utf-8") as file:
                 file.write("\n".join(lines) + "\n")
             return self.archivo_auditoria
         except Exception as e:
-            print(f"[ERROR] Fallo al persistir el reporte de auditoría: {e}")
+            print(f"\n[ERROR] Fallo al persistir el reporte de auditoría: {e}")
             return Path("ERROR")
+        
+
+# SubTotal + Impuestos Trasladados - Impuestos Retenidos - Descuentos = Total        

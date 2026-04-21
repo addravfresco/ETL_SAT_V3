@@ -1,12 +1,11 @@
-"""
-Módulo de consolidación STG -> Producción.
+"""Módulo de consolidación STG -> Producción.
 
-Automatiza la fase final del patrón ELT delegando en SQL Server la
-deduplicación opcional, conversión de tipos y migración masiva desde tablas
-staging hacia tablas definitivas.
+Automatiza la fase final del patrón ELT delegando en el motor de SQL Server la
+deduplicación opcional, conversión de tipos (Casting Seguro) y la migración 
+masiva desde tablas staging hacia las tablas definitivas.
 
-Incluye Minimal Logging (TABLOCK) para máxima velocidad en bases de datos
-con modelo de recuperación SIMPLE o BULK_LOGGED.
+Implementa Minimal Logging (TABLOCK) para garantizar el máximo rendimiento de I/O
+en bases de datos configuradas con modelo de recuperación SIMPLE o BULK_LOGGED.
 """
 
 from __future__ import annotations
@@ -22,6 +21,16 @@ from pkg.load import build_staging_table_name
 
 @dataclass(frozen=True)
 class ColumnMeta:
+    """Metadatos extraídos del catálogo del sistema para una columna específica.
+
+    Attributes:
+        name (str): Nombre físico de la columna en la base de datos.
+        data_type (str): Tipo de dato base en SQL Server (ej. varchar, int, datetime).
+        char_length (int | None): Longitud máxima definida para tipos de cadena.
+        numeric_precision (int | None): Precisión total definida para tipos numéricos.
+        numeric_scale (int | None): Escala (decimales) definida para tipos numéricos.
+        ordinal_position (int): Posición secuencial de la columna en la tabla.
+    """
     name: str
     data_type: str
     char_length: int | None
@@ -32,6 +41,14 @@ class ColumnMeta:
 
 @dataclass(frozen=True)
 class ConsolidationResult:
+    """Resumen de métricas resultantes del proceso de consolidación.
+
+    Attributes:
+        inserted_rows (int): Cantidad de registros insertados exitosamente en destino.
+        duplicate_rows (int): Cantidad de registros descartados por reglas de deduplicación.
+        cast_warning_rows (int): Cantidad de registros ingresados con nulos forzados por fallos de conversión.
+        log_table_name (str | None): Nombre de la tabla de auditoría utilizada, si aplica.
+    """
     inserted_rows: int
     duplicate_rows: int
     cast_warning_rows: int
@@ -39,10 +56,30 @@ class ConsolidationResult:
 
 
 def _quote_identifier(identifier: str) -> str:
+    """Aplica delimitadores seguros a un identificador de SQL Server.
+
+    Args:
+        identifier (str): Nombre del objeto o columna.
+
+    Returns:
+        str: Identificador encapsulado en corchetes (ej. [NombreColumna]).
+    """
     return f"[{identifier}]"
 
 
 def _get_columns(table_name: str, schema_name: str = "dbo") -> List[ColumnMeta]:
+    """Consulta el esquema de información para extraer la topología de la tabla destino.
+
+    Args:
+        table_name (str): Nombre de la tabla física a inspeccionar.
+        schema_name (str, optional): Esquema de base de datos. Por defecto "dbo".
+
+    Returns:
+        List[ColumnMeta]: Colección de metadatos ordenados por posición ordinal.
+
+    Raises:
+        ValueError: Si la tabla no existe o el esquema no es accesible.
+    """
     engine = get_engine()
 
     sql = text(
@@ -87,16 +124,42 @@ def _get_columns(table_name: str, schema_name: str = "dbo") -> List[ColumnMeta]:
 
 
 def _get_column_meta_map(columns: List[ColumnMeta]) -> dict[str, ColumnMeta]:
+    """Genera un índice de metadatos basado en el nombre de la columna.
+
+    Args:
+        columns (List[ColumnMeta]): Lista de metadatos de columnas.
+
+    Returns:
+        dict[str, ColumnMeta]: Diccionario mapeando el nombre en mayúsculas al objeto de metadatos.
+    """
     return {col.name.upper(): col for col in columns}
 
 
 def _build_cast_expression(col: ColumnMeta) -> str:
+    """Construye la expresión T-SQL de transformación (TRY_CAST) apropiada para la columna.
+
+    Aplica reglas de sanitización de espacios (RTRIM/LTRIM) y conversión tolerante a fallos
+    basada en el tipo de dato físico destino.
+
+    Args:
+        col (ColumnMeta): Metadatos de la columna objetivo.
+
+    Returns:
+        str: Expresión SQL formateada (ej. TRY_CAST(NULLIF(...) AS INT)).
+    """
     quoted_col = _quote_identifier(col.name)
     src = f"Src.{quoted_col}"
     src_as_text = f"CAST({src} AS NVARCHAR(4000))"
     cleaned_text = f"NULLIF(LTRIM(RTRIM({src_as_text})), '')"
 
-    if col.data_type in {"varchar", "nvarchar", "char", "nchar", "text", "ntext"}:
+    # Truncamiento seguro para cadenas con longitud estricta para evitar desbordamientos
+    if col.data_type in {"varchar", "nvarchar", "char", "nchar"}:
+        if col.char_length and col.char_length > 0:
+            return f"LEFT({src}, {col.char_length}) AS {quoted_col}"
+        return f"{src} AS {quoted_col}"
+
+    # Soporte de paso directo para tipos de texto legacy
+    if col.data_type in {"text", "ntext"}:
         return f"{src} AS {quoted_col}"
 
     if col.data_type == "date":
@@ -135,6 +198,17 @@ def _build_cast_expression(col: ColumnMeta) -> str:
 
 
 def _build_cast_failure_condition(col: ColumnMeta) -> str:
+    """Genera la evaluación booleana SQL para detectar una conversión fallida.
+
+    Identifica registros donde el valor origen existe, pero su conversión al tipo
+    destino resulta en NULL.
+
+    Args:
+        col (ColumnMeta): Metadatos de la columna objetivo.
+
+    Returns:
+        str: Condición SQL evaluable en una cláusula WHERE.
+    """
     quoted_col = _quote_identifier(col.name)
     src = f"Src.{quoted_col}"
     src_as_text = f"CAST({src} AS NVARCHAR(4000))"
@@ -182,6 +256,14 @@ def _build_cast_failure_condition(col: ColumnMeta) -> str:
 
 
 def _build_cast_failure_detail_expression(warning_columns: List[ColumnMeta]) -> str:
+    """Construye la expresión SQL para concatenar dinámicamente nombres de columnas afectadas.
+
+    Args:
+        warning_columns (List[ColumnMeta]): Lista de columnas monitoreadas para conversión.
+
+    Returns:
+        str: Expresión T-SQL (uso de STUFF y CASE) que resulta en una cadena CSV con las columnas fallidas.
+    """
     parts: list[str] = []
 
     for col in warning_columns:
@@ -200,6 +282,19 @@ def _build_log_table_sql(
     stg_table_name: str,
     schema_name: str = "dbo",
 ) -> str:
+    """Genera el script DDL para provisionar dinámicamente la tabla de auditoría.
+
+    Asegura que la tabla de log comparta la misma estructura que la tabla staging,
+    incorporando adicionalmente campos de control transaccional.
+
+    Args:
+        log_table_name (str): Nombre de la tabla de auditoría a generar.
+        stg_table_name (str): Nombre de la tabla staging origen.
+        schema_name (str, optional): Esquema de base de datos. Por defecto "dbo".
+
+    Returns:
+        str: Sentencia T-SQL para la creación condicional de la tabla de log.
+    """
     quoted_schema = _quote_identifier(schema_name)
     quoted_log = f"{quoted_schema}.{_quote_identifier(log_table_name)}"
     quoted_stg = f"{quoted_schema}.{_quote_identifier(stg_table_name)}"
@@ -227,6 +322,26 @@ def consolidate_staging_to_target(
     cast_warning_columns: list[str] | None = None,
     log_table_name: str | None = None,
 ) -> ConsolidationResult:
+    """Orquesta la consolidación de datos desde el área Staging hacia Producción.
+
+    Aplica deduplicación basada en ventanas, validación estructural y delegación
+    completa del esfuerzo de procesamiento al motor relacional de SQL Server.
+
+    Args:
+        table_name (str): Nombre de la tabla definitiva de producción.
+        dedupe_enabled (bool): Activa la estrategia lógica de descarte de duplicados.
+        dedupe_keys (list[str] | None, optional): Atributos que conforman la clave lógica.
+        order_by (list[str] | None, optional): Atributo prioritario para resolución de empates.
+        schema_name (str, optional): Esquema físico de base de datos. Por defecto "dbo".
+        cast_warning_columns (list[str] | None, optional): Columnas auditadas para registro forense de fallos.
+        log_table_name (str | None, optional): Tabla repositorio para registros anómalos o duplicados.
+
+    Returns:
+        ConsolidationResult: Métricas de auditoría del proceso.
+
+    Raises:
+        ValueError: Si la configuración lógica provista es inconsistente (ej. deduplicación activada sin llaves).
+    """
     engine = get_engine()
     stg_table = build_staging_table_name(table_name)
     columns = _get_columns(table_name=table_name, schema_name=schema_name)
@@ -269,6 +384,7 @@ def consolidate_staging_to_target(
         f"Base.{_quote_identifier(col)} ASC" for col in (order_by or ["FilaOrigen"])
     )
 
+    # Common Table Expression (CTE) para establecer ventanas lógicas de deduplicación
     ranked_cte = (
         f"""
         WITH Ranked AS (
@@ -304,6 +420,7 @@ def consolidate_staging_to_target(
     cast_warning_count = 0
 
     with engine.begin() as conn:
+        # Aprovisionamiento dinámico de auditoría
         if log_table_name:
             conn.execute(
                 text(
@@ -315,6 +432,7 @@ def consolidate_staging_to_target(
                 )
             )
 
+        # Aislamiento forense de duplicados
         if log_table_name and dedupe_enabled:
             quoted_log = f"{quoted_schema}.{_quote_identifier(log_table_name)}"
 
@@ -346,6 +464,7 @@ def consolidate_staging_to_target(
             duplicate_count_result = conn.execute(text(sql_count_duplicates)).mappings().first()
             duplicate_count = int(duplicate_count_result["duplicate_rows"]) if duplicate_count_result else 0
 
+        # Aislamiento forense de fallos de integridad estructural (Cast)
         if log_table_name and warning_meta:
             quoted_log = f"{quoted_schema}.{_quote_identifier(log_table_name)}"
 
@@ -377,10 +496,7 @@ def consolidate_staging_to_target(
             cast_warning_result = conn.execute(text(sql_count_warnings)).mappings().first()
             cast_warning_count = int(cast_warning_result["cast_warning_rows"]) if cast_warning_result else 0
 
-        # =====================================================================
-        # ARQUITECTURA ELT CLÁSICA: CARGA MASIVA (SINGLE BATCH)
-        # =====================================================================
-        
+        # Operación principal Set-Based
         print(f"[INFO] Iniciando inserción masiva en {table_name}. El motor de SQL Server está procesando...")
 
         sql_insert_main = f"""
@@ -394,7 +510,7 @@ def consolidate_staging_to_target(
         res = conn.execute(text(sql_insert_main))
         total_inserted = res.rowcount if res.rowcount != -1 else 0
 
-        # Limpieza de Staging
+        # Purga de artefactos temporales transaccionales
         conn.execute(text(f"DROP TABLE IF EXISTS {quoted_stg};"))
 
     return ConsolidationResult(

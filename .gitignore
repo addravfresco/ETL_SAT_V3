@@ -1,24 +1,54 @@
-# Entornos Virtuales
+# =============================================================================
+# 1. Entornos Virtuales y Dependencias
+# =============================================================================
 env/
 venv/
 .venv/
 ENV/
 
-# Archivos de Configuración Sensible (Contraseñas)
+# =============================================================================
+# 2. Seguridad y Credenciales (¡CRÍTICO!)
+# =============================================================================
 .env
 
-# Archivos Temporales de Polars y ETL
+# =============================================================================
+# 3. Artefactos del ETL, Estado y Temporales
+# =============================================================================
 temp_processing/
 ESTRUCTURA_PROYECTO.txt
 estado_etl.json
+data_fallback/
+sat_bigdata/
 
-# Cache de Python
-**/__pycache__/
-*.py[cod]
-
-# Logs y Reportes
+# =============================================================================
+# 4. Logs, Reportes y Datos Crudos
+# =============================================================================
 logs/
 *.csv
-*.xlsx
-*.docx
 *.utf8_clean.csv
+
+# Ignorar archivos temporales que crea Office/Windows al tenerlos abiertos
+~$*.xlsx
+~$*.docx
+
+# =============================================================================
+# 5. Cache de Python
+# =============================================================================
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# =============================================================================
+# 6. Configuraciones de IDE y Sistema Operativo (Ruido)
+# =============================================================================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# =============================================================================
+# 7. EXCEPCIONES IMPORTANTES (Archivos que SÍ deben subir)
+# =============================================================================
+# Permitir que suban específicamente los manuales y diccionarios de la carpeta Data
+!Data/*.xlsx
+!Data/*.docx

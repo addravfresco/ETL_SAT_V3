@@ -35,6 +35,8 @@ REEMPLAZOS_NIVEL_1: Dict[str, str] = {
     r"MONTA�O": "MONTAÑO",
     r"ORDO�EZ": "ORDOÑEZ",
     r"CR�DITO": "CREDITO",
+    r"SECRETARÃA": "SECRETARÍA",
+    r"PÃŠBLICA": "PUBLICA",
     r"PATI�O": "PATIÑO",
     r"AVENDA�O": "AVENDAÑO",
     r"ACU�A": "ACUÑA",
@@ -14191,20 +14193,16 @@ REEMPLAZOS_NIVEL_1: Dict[str, str] = {
 }
 
 
-# =============================================================================
-# NIVEL 2: RESOLUCIÓN DE DOBLE CODIFICACIÓN (DOUBLE ENCODING)
-# =============================================================================
-# Patrones deterministas originados por la superposición de estándares 
-# UTF-8 sobre ISO-8859-1 durante la extracción del sistema fuente.
+# pkg/cleaning_rules.py
 REEMPLAZOS_NIVEL_2: Dict[str, str] = {
     "ÃƒÂ±": "Ñ",
     "ÃƒÂ‘": "Ñ",
-    "Ã\x8d": "I", 
-    "Ã\x81": "A", 
+    "Ã\x8d": "I",  # Devuelve I normal
+    "Ã\x81": "A",  # Devuelve A normal
     "Ã‘": "Ñ",
     "Ã±": "Ñ",
-    "Ã‰": "E",
-    "Ã“": "O",
+    "Ã‰": "E",  # Devuelve E normal
+    "Ã“": "O",  # Devuelve O normal
     "Ã”": "O",
     "Ã…": "A",
     "Ã¡": "A",
@@ -14214,9 +14212,9 @@ REEMPLAZOS_NIVEL_2: Dict[str, str] = {
     "Ãº": "U",
     "Ãš": "U",
     "ÃŒ": "U",
-    "Ã‡": " ",    
+    "Ã‡": " ",
+    "ÃA": "IA",    
 }
-
 # =============================================================================
 # NIVEL 3: LIMPIEZA DE BASURA INVISIBLE Y ENTIDADES HTML
 # =============================================================================

@@ -1,5 +1,4 @@
-"""
-Módulo de mapeo topológico y documentación de repositorio.
+"""Módulo de mapeo topológico y documentación de repositorio.
 
 Genera una representación visual en formato de árbol de la estructura 
 de directorios y archivos del proyecto. Excluye automáticamente artefactos 
@@ -38,47 +37,48 @@ IGNORE_FILES: Set[str] = {
 
 
 def generate_tree(dir_path: Path, prefix: str = "") -> List[str]:
-    """
-    Genera recursivamente la representación topológica de un directorio.
+    """Genera recursivamente la representación topológica de un directorio.
 
     Itera sobre el sistema de archivos clasificando primero los directorios y 
-    luego los archivos, aplicando las reglas de exclusión configuradas.
+    luego los archivos, aplicando las reglas de exclusión configuradas en el 
+    ámbito global para omitir artefactos no relevantes para la arquitectura.
 
     Args:
         dir_path (Path): Ruta absoluta o relativa del directorio a escanear.
-        prefix (str): Cadena de formateo visual para la indentación jerárquica.
+        prefix (str, optional): Cadena de formateo visual para la indentación jerárquica.
+            Por defecto es una cadena vacía.
 
     Returns:
-        List[str]: Lista de cadenas formateadas que representan el árbol visual.
+        List[str]: Colección de cadenas formateadas que representan el árbol visual.
     """
     try:
         contents = list(dir_path.iterdir())
     except PermissionError:
         return [f"{prefix}└── [ACCESO DENEGADO]"]
         
-    # Ordenamiento lógico: Directorios en la parte superior, archivos en la inferior
+    # Ordenamiento lógico: Directorios consolidados en la parte superior
     contents.sort(key=lambda x: (not x.is_dir(), x.name.lower()))
 
     tree_lines: List[str] = []
     
-    # Aplicación de reglas de exclusión
+    # Aplicación de reglas de exclusión (Filtro de Ruido)
     filtered_contents = [
         c for c in contents 
         if c.name not in IGNORE_DIRS and c.name not in IGNORE_FILES
     ]
 
-    # Asignación de conectores visuales para la ramificación
+    # Asignación de conectores visuales para la ramificación del árbol
     pointers = [("├── " if i < len(filtered_contents) - 1 else "└── ") for i in range(len(filtered_contents))]
 
     for pointer, path in zip(pointers, filtered_contents):
-        # Determinación de la sangría para los niveles subsecuentes
+        # Determinación de la sangría transversal para los niveles subsecuentes
         connector = "│   " if pointer == "├── " else "    "
         line = f"{prefix}{pointer}{path.name}"
         
         if path.is_dir():
             line += "/"
             tree_lines.append(line)
-            # Llamada recursiva para profundizar en el subdirectorio
+            # Ejecución recursiva de profundidad (Depth-First Search)
             tree_lines.extend(generate_tree(path, prefix + connector))
         else:
             tree_lines.append(line)
@@ -87,8 +87,11 @@ def generate_tree(dir_path: Path, prefix: str = "") -> List[str]:
 
 
 def main() -> None:
-    """
-    Ejecuta el escaneo del directorio de trabajo actual y persiste la topología.
+    """Ejecuta el escaneo topológico y persiste la estructura del repositorio.
+
+    Inicia el recorrido desde el directorio de trabajo actual (CWD), renderiza 
+    la salida en la interfaz de línea de comandos y consolida el artefacto 
+    final en un archivo de texto plano para propósitos de documentación.
     """
     root_dir = Path.cwd()
     print(f"\n[INFO] Iniciando escaneo topológico del repositorio: {root_dir.name}...")
@@ -112,7 +115,7 @@ def main() -> None:
                 
         print(f"\n[SUCCESS] Topología exportada exitosamente en: {output_file}")
         
-        # Apertura automática delegada al sistema operativo
+        # Apertura automática delegada al sistema operativo huésped
         if os.name == "nt":  # Windows
             os.startfile(output_file)
     except Exception as e:

@@ -1,9 +1,8 @@
-"""
-Módulo de perfilado de datos y aislamiento de anomalías de codificación (Mojibake).
+"""Módulo de perfilado de datos y aislamiento de anomalías de codificación (Mojibake).
 
 Ejecuta un análisis forense sobre campos de texto libre para identificar patrones 
 de caracteres corruptos. Emplea lectura fragmentada (Batched) e iteración controlada 
-para procesar archivos masivos previniendo el desbordamiento de memoria (Out-of-Memory).
+para procesar archivos masivos, previniendo el desbordamiento de memoria (Out-of-Memory).
 """
 
 import sys
@@ -17,21 +16,24 @@ from pkg.globals import SAT_RAW_DIR
 
 
 def cazar_mojibake(nombre_archivo: str) -> None:
-    """
-    Ejecuta el escaneo de anomalías de codificación sobre un archivo crudo.
+    """Ejecuta el escaneo de anomalías de codificación sobre un archivo crudo.
 
-    Filtra patrones previamente conocidos y consolida la frecuencia de nuevas
-    palabras corruptas, exportando un artefacto CSV para su revisión forense.
+    Utiliza el motor iterativo de Polars para leer un archivo en fragmentos.
+    Aplica una transformación 'unpivot' sobre campos textuales susceptibles
+    y emplea una expresión regular para aislar tokens (palabras) corrompidos.
+    Filtra los patrones preexistentes en la base de conocimiento y exporta
+    un artefacto analítico (CSV) ordenado por frecuencia de aparición.
 
     Args:
-        nombre_archivo (str): Nombre físico del archivo con extensión.
+        nombre_archivo (str): Nombre físico del archivo objetivo con extensión.
 
     Raises:
-        SystemExit: Si el archivo no es localizado o falla la inicialización del lector.
+        SystemExit: Si el archivo no es localizado en la unidad de montaje 
+            o si la inicialización del lector en lotes de Polars falla.
     """
     print("\n[INFO] Iniciando escaneo forense multi-columna (Modo Lotes)...")
     
-    # 1. Resolución de ruta y validación de existencia
+    # Resolución de ruta y validación de existencia en la unidad virtual
     archivo_sat = SAT_RAW_DIR / nombre_archivo
     if not archivo_sat.exists():
         print(f"[ERROR] Recurso no localizado en la ruta de red: {archivo_sat}")
@@ -49,14 +51,14 @@ def cazar_mojibake(nombre_archivo: str) -> None:
         "CondicionesDePago"
     ]
 
-    # 2. Carga de patrones conocidos (Lista de exclusión)
+    # Carga del repositorio de conocimiento (Lista de exclusión de falsos positivos)
     palabras_conocidas = [palabra.upper() for palabra in REEMPLAZOS_MOJIBAKE.keys()]
     print(f"[INFO] Se excluirán {len(palabras_conocidas):,} patrones preexistentes en cleaning_rules.py")
 
-    # Expresión regular vectorizada para captura de caracteres anómalos
+    # Patrón vectorizado para la captura forense de caracteres no imprimibles o anómalos
     regex_corrupcion = r"(?i)\b\w*[\ufffdÃÐðƑâÂ˜¨´™&¿½¡\?#]+\w*\b"
 
-    # 3. Inicialización del lector en lotes para procesamiento Out-of-Core
+    # Aprovisionamiento del iterador Out-of-Core para protección de memoria principal
     try:
         reader = pl.read_csv_batched(
             str(archivo_sat),
@@ -72,13 +74,13 @@ def cazar_mojibake(nombre_archivo: str) -> None:
         print(f"[CRITICAL ERROR] Fallo al inicializar el lector de Polars: {e}")
         sys.exit(1)
 
-    # Estructura de consolidación de frecuencias en memoria principal
+    # Estructura de consolidación hash en RAM para acumulación secuencial
     frecuencias_globales: Dict[str, int] = {}
     lotes_procesados = 0
 
     print("[INFO] Procesando bloques de 100,000 registros. Esta operación puede demorar...")
 
-    # 4. Iteración y extracción de anomalías por bloque
+    # Iteración, transformación relacional y extracción de anomalías por fragmento
     while True:
         batches = reader.next_batches(1)
         if not batches:
@@ -92,7 +94,7 @@ def cazar_mojibake(nombre_archivo: str) -> None:
         if not columnas_presentes:
             continue
 
-        # Transformación relacional: Unpivot, filtrado Regex y agregación de frecuencias
+        # Operación de transformación: Desnormalización, extracción Regex y agregación matemática
         resultado_parcial = (
             df_batch
             .select(columnas_presentes)
@@ -111,16 +113,16 @@ def cazar_mojibake(nombre_archivo: str) -> None:
             .agg(pl.len().alias("Frecuencia"))
         )
 
-        # Inyección de las frecuencias parciales al diccionario maestro
+        # Inyección transaccional de frecuencias parciales al diccionario consolidado
         for fila in resultado_parcial.iter_rows():
             palabra, cantidad = fila
             frecuencias_globales[palabra] = frecuencias_globales.get(palabra, 0) + cantidad
             
-        # Telemetría básica para monitoreo de actividad
+        # Telemetría estándar para verificación de flujo
         if lotes_procesados % 10 == 0:
             print(f"   ... Lotes procesados: {lotes_procesados} ({(lotes_procesados * 100_000):,} filas)")
 
-    # 5. Consolidación de resultados y exportación del artefacto forense
+    # Síntesis de métricas finales y aprovisionamiento del artefacto exportable
     if frecuencias_globales:
         df_final = pl.DataFrame({
             "Palabras_Rotas": list(frecuencias_globales.keys()),
@@ -138,6 +140,7 @@ def cazar_mojibake(nombre_archivo: str) -> None:
 
 
 if __name__ == "__main__":
+    # Evaluación de la interfaz de consola para ejecución independiente
     if len(sys.argv) < 2:
         print("[WARN] Uso de CLI incorrecto.")
         print("[INFO] Sintaxis esperada: python mojibake_hunter.py <nombre_del_archivo.csv>")
